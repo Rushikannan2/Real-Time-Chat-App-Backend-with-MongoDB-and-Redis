@@ -5,6 +5,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import logger from './logger.js';
 import { connectMongoose } from './config/mongoose.js';
 import { createRedisClient } from './config/redis.js';
+import { createAdapter } from '@socket.io/redis-adapter';
 import routes from './routes/index.js';
 import Message from './models/message.js';
 import ChatRoom from './models/chatRoom.js';
@@ -48,8 +49,50 @@ async function start() {
     cors: { origin: process.env.CORS_ORIGIN || '*', methods: ['GET', 'POST'] },
   });
 
+  // If Redis is available, attach the Socket.IO Redis adapter for horizontal scaling
+  if (global.redisClient) {
+    try {
+      // duplicate clients for the adapter (pub/sub)
+      const pubClient = global.redisClient.duplicate();
+      const subClient = global.redisClient.duplicate();
+      await pubClient.connect();
+      await subClient.connect();
+      io.adapter(createAdapter(pubClient, subClient));
+      logger.info('Attached Socket.IO Redis adapter (pub/sub)');
+    } catch (e) {
+      logger.warn('Failed to attach Socket.IO Redis adapter: ' + (e.message || e));
+    }
+  }
+
+  // Presence helpers using Redis sets
+  const addSocketForUser = async (userId, socketId) => {
+    if (!global.redisClient || !userId || !socketId) return;
+    try {
+      await global.redisClient.sAdd(`user:${userId}:sockets`, String(socketId));
+      await global.redisClient.sAdd('online_users', String(userId));
+      // publish presence change
+      await global.redisClient.publish('presence', JSON.stringify({ userId: String(userId), online: true }));
+    } catch (err) {
+      logger.warn('addSocketForUser error: ' + (err.message || err));
+    }
+  };
+
+  const removeSocketForUser = async (userId, socketId) => {
+    if (!global.redisClient || !userId || !socketId) return;
+    try {
+      await global.redisClient.sRem(`user:${userId}:sockets`, String(socketId));
+      const remaining = await global.redisClient.sCard(`user:${userId}:sockets`);
+      if (!remaining) {
+        await global.redisClient.sRem('online_users', String(userId));
+        await global.redisClient.publish('presence', JSON.stringify({ userId: String(userId), online: false }));
+      }
+    } catch (err) {
+      logger.warn('removeSocketForUser error: ' + (err.message || err));
+    }
+  };
+
   // Socket.IO event handlers
-  io.on('connection', (socket) => {
+  io.on('connection', async (socket) => {
     logger.info(`Socket connected: ${socket.id}`);
 
     // Optional: client may pass userId in handshake query (or emit a 'setup' event)
@@ -57,6 +100,8 @@ async function start() {
     if (handshakeUserId) {
       userToSocket.set(String(handshakeUserId), socket.id);
       socketToUser.set(socket.id, String(handshakeUserId));
+      // add to Redis presence
+      await addSocketForUser(String(handshakeUserId), socket.id);
       logger.info(`Associated socket ${socket.id} with user ${handshakeUserId}`);
     }
 
@@ -91,7 +136,7 @@ async function start() {
           metadata: payload.metadata || {},
         });
 
-        const saved = await msg.save();
+  const saved = await msg.save();
 
         // Update chat room's lastMessageAt for ordering
         try {
@@ -100,7 +145,18 @@ async function start() {
           logger.warn('Failed to update ChatRoom.lastMessageAt: ' + (e.message || e));
         }
 
+        // Push into Redis-backed queue for workers to consume (durable-ish)
+        try {
+          if (global.redisClient) {
+            const msgObj = saved.toObject ? saved.toObject() : saved;
+            await global.redisClient.rPush('queue:messages', JSON.stringify(msgObj));
+          }
+        } catch (e) {
+          logger.warn('Failed to push message to Redis queue: ' + (e.message || e));
+        }
+
         // Broadcast to all sockets in the room (including sender)
+        // With the Redis adapter attached this will propagate across server instances.
         io.to(String(payload.room)).emit('receiveMessage', saved);
       } catch (e) {
         logger.error('sendMessage handler error: ' + (e.stack || e));
@@ -124,6 +180,7 @@ async function start() {
       if (!userId) return;
       userToSocket.set(String(userId), socket.id);
       socketToUser.set(socket.id, String(userId));
+      addSocketForUser(String(userId), socket.id);
       logger.info(`Setup mapping socket ${socket.id} -> user ${userId}`);
     });
 
@@ -131,6 +188,8 @@ async function start() {
       const uid = socketToUser.get(socket.id);
       if (uid) userToSocket.delete(uid);
       socketToUser.delete(socket.id);
+      // remove from Redis presence
+      removeSocketForUser(uid, socket.id);
       logger.info(`Socket disconnected: ${socket.id} reason=${reason} user=${uid || 'unknown'}`);
     });
   });
