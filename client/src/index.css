@@ -1,28 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 :root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
-
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+  --bg: #0f1724; /* dark-blue */
+  --card: #0b1220;
+  --muted: #9fb6dc;
+  --accent: #646cff;
+  --surface-2: #111827;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
+html, body, #root {
+  height: 100%;
 }
 
 body {
+  @apply bg-[color:var(--bg)] text-slate-100; /* tailwind utility ready */
   margin: 0;
   display: flex;
   place-items: center;
@@ -30,39 +24,103 @@ body {
   min-height: 100vh;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+a { @apply font-medium text-[color:var(--accent)]; }
+a:hover { color: #535bf2; }
+
+.auth-card {
+  background: linear-gradient(180deg,var(--card), rgba(8,10,13,0.6));
+  border: 1px solid rgba(255,255,255,0.04);
+  padding: 2rem;
+  border-radius: 12px;
+  width: 100%;
+  max-width: 420px;
+  box-shadow: 0 8px 30px rgba(2,6,23,0.6);
 }
 
-button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
-  cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
-}
+.form-field { margin-bottom: 1rem; }
+.form-field label { display:block; margin-bottom:0.35rem; color:var(--muted); font-size:0.9rem }
+.form-field input { width:100%; padding:0.7rem 0.9rem; border-radius:8px; background:transparent; border:1px solid rgba(255,255,255,0.06); color:inherit }
+
+.form-actions { display:flex; gap:0.6rem; margin-top:1rem }
+.btn { @apply bg-[color:var(--accent)] text-white px-4 py-2 rounded-md font-medium; border: none }
+.btn.secondary { @apply bg-transparent border border-white/10 text-white }
+
+.links-row { margin-top:1rem; color:var(--muted); font-size:0.9rem }
+
+/* small helper layout for pages */
+.container-center { display:flex; align-items:center; justify-content:center; min-height:100vh; padding:2rem }
 
 @media (prefers-color-scheme: light) {
+  :root { --bg: #f7fafc; --card: #ffffff; --muted: #475569; --accent: #4f46e5 }
+  body { color: #0f1724 }
+  .auth-card { box-shadow: 0 6px 18px rgba(15,23,42,0.06) }
+}
+
+
+
+@layer base {
   :root {
-    color: #213547;
-    background-color: #ffffff;
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 240 5.9% 10%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 240 10% 3.9%;
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --radius: 0.5rem;
   }
-  a:hover {
-    color: #747bff;
+  .dark {
+    --background: 240 10% 3.9%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 240 5.9% 10%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 240 4.9% 83.9%;
+    --chart-1: 220 70% 50%;
+    --chart-2: 160 60% 45%;
+    --chart-3: 30 80% 55%;
+    --chart-4: 280 65% 60%;
+    --chart-5: 340 75% 55%;
   }
-  button {
-    background-color: #f9f9f9;
+}
+
+
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
   }
 }
