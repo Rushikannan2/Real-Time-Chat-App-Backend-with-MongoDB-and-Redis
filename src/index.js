@@ -9,6 +9,7 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import routes from './routes/index.js';
 import Message from './models/message.js';
 import ChatRoom from './models/chatRoom.js';
+import { enqueueSavedMessageForUser, drainQueueForUser } from './services/messageQueue.js';
 
 dotenv.config();
 
@@ -103,6 +104,24 @@ async function start() {
       // add to Redis presence
       await addSocketForUser(String(handshakeUserId), socket.id);
       logger.info(`Associated socket ${socket.id} with user ${handshakeUserId}`);
+      // Drain any queued messages for this user and deliver now
+      try {
+        const uid = String(handshakeUserId);
+        await drainQueueForUser(uid, async (msgObj) => {
+          // emit to this socket only
+          socket.emit('receiveMessage', msgObj);
+          // update DB to mark delivered
+          try {
+            if (msgObj && msgObj._id) {
+              await Message.findByIdAndUpdate(msgObj._id, { $addToSet: { deliveredTo: uid } }).exec();
+            }
+          } catch (e) {
+            logger.warn('Failed to mark queued message delivered in DB: ' + (e.message || e));
+          }
+        });
+      } catch (e) {
+        logger.warn('drainQueueForUser failed on connection handshake: ' + (e.message || e));
+      }
     }
 
     // Join a room
@@ -158,6 +177,52 @@ async function start() {
         // Broadcast to all sockets in the room (including sender)
         // With the Redis adapter attached this will propagate across server instances.
         io.to(String(payload.room)).emit('receiveMessage', saved);
+
+        // Determine participants and enqueue message for offline users (and mark delivered for online ones)
+        try {
+          const roomDoc = await ChatRoom.findById(payload.room).select('participants').lean();
+          if (roomDoc && Array.isArray(roomDoc.participants) && roomDoc.participants.length) {
+            const participants = roomDoc.participants.map((p) => String(p));
+            const senderId = String(saved.sender || payload.sender);
+            // For each participant except sender, check presence
+            for (const participantId of participants) {
+              if (participantId === senderId) continue;
+              let isOnline = false;
+              try {
+                if (global.redisClient) {
+                  const sockets = await global.redisClient.sCard(`user:${participantId}:sockets`);
+                  isOnline = !!sockets;
+                }
+              } catch (e) {
+                // fallback to presence set check
+                try {
+                  const online = await global.redisClient.sIsMember('online_users', String(participantId));
+                  isOnline = !!online;
+                } catch (ee) {
+                  isOnline = false;
+                }
+              }
+
+              if (isOnline) {
+                // Mark delivered in DB so we track per-user delivery
+                try {
+                  await Message.findByIdAndUpdate(saved._id, { $addToSet: { deliveredTo: participantId } }).exec();
+                } catch (e) {
+                  logger.warn('Failed to mark message delivered for ' + participantId + ': ' + (e.message || e));
+                }
+              } else {
+                // enqueue for later delivery
+                try {
+                  await enqueueSavedMessageForUser(participantId, saved);
+                } catch (e) {
+                  logger.warn('Failed to enqueue message for offline user ' + participantId + ': ' + (e.message || e));
+                }
+              }
+            }
+          }
+        } catch (e) {
+          logger.warn('Error while computing offline recipients: ' + (e.message || e));
+        }
       } catch (e) {
         logger.error('sendMessage handler error: ' + (e.stack || e));
         socket.emit('error', { message: 'sendMessage failed' });
@@ -182,6 +247,24 @@ async function start() {
       socketToUser.set(socket.id, String(userId));
       addSocketForUser(String(userId), socket.id);
       logger.info(`Setup mapping socket ${socket.id} -> user ${userId}`);
+      // Drain queued messages for user once they've set up their identity
+      (async () => {
+        try {
+          const uid = String(userId);
+          await drainQueueForUser(uid, async (msgObj) => {
+            socket.emit('receiveMessage', msgObj);
+            try {
+              if (msgObj && msgObj._id) {
+                await Message.findByIdAndUpdate(msgObj._id, { $addToSet: { deliveredTo: uid } }).exec();
+              }
+            } catch (e) {
+              logger.warn('Failed to mark queued message delivered in DB: ' + (e.message || e));
+            }
+          });
+        } catch (e) {
+          logger.warn('drainQueueForUser failed on setup: ' + (e.message || e));
+        }
+      })();
     });
 
     socket.on('disconnect', (reason) => {

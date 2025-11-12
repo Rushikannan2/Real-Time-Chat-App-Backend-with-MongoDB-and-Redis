@@ -22,7 +22,9 @@ const MessageSchema = new Schema(
       },
     ],
     // Users who have read this message
-    readBy: [{ type: Schema.Types.ObjectId, ref: 'User', index: true }],
+  readBy: [{ type: Schema.Types.ObjectId, ref: 'User', index: true }],
+  // Users who have been delivered this message (but may not have read it yet)
+  deliveredTo: [{ type: Schema.Types.ObjectId, ref: 'User', index: true }],
     metadata: Schema.Types.Mixed,
   },
   { timestamps: true }
@@ -43,6 +45,18 @@ MessageSchema.methods.markRead = function markRead(userId) {
   if (already) return Promise.resolve(this);
   this.readBy = this.readBy || [];
   this.readBy.push(uid);
+  return this.save();
+};
+
+/**
+ * Instance method to mark this message as delivered to a user
+ */
+MessageSchema.methods.markDelivered = function markDelivered(userId) {
+  const uid = userId && userId.toString ? userId.toString() : String(userId);
+  const already = (this.deliveredTo || []).some((r) => r.toString() === uid);
+  if (already) return Promise.resolve(this);
+  this.deliveredTo = this.deliveredTo || [];
+  this.deliveredTo.push(uid);
   return this.save();
 };
 
