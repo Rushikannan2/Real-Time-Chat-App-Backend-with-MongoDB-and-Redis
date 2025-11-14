@@ -1,27 +1,39 @@
-import fs from 'fs';
-import path from 'path';
 import winston from 'winston';
 
-const { combine, timestamp, printf, colorize } = winston.format;
+const { combine, timestamp, printf, colorize, json } = winston.format;
 
-// ensure logs directory exists
-const logsDir = path.resolve(process.cwd(), 'logs');
-try {
-  fs.mkdirSync(logsDir, { recursive: true });
-} catch (err) {
-  // ignore
-}
-
-const myFormat = printf(({ level, message, timestamp }) => `${timestamp} [${level}] ${message}`);
+// Custom format for console logging
+const consoleFormat = printf(({ level, message, timestamp, stack }) => {
+  return `${timestamp} ${level}: ${stack || message}`;
+});
 
 const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: combine(timestamp(), myFormat),
+  level: process.env.NODE_ENV === 'development' ? 'debug' : 'info',
+  format: combine(
+    timestamp({
+      format: 'YYYY-MM-DD HH:mm:ss'
+    }),
+    winston.format.errors({ stack: true }),
+    json()
+  ),
   transports: [
-    new winston.transports.Console({ format: combine(colorize(), timestamp(), myFormat) }),
-    new winston.transports.File({ filename: path.join(logsDir, 'app.log'), level: 'info' })
-  ],
-  exitOnError: false
+    new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
+    new winston.transports.File({ filename: 'logs/combined.log' })
+  ]
 });
+
+// If we're not in production then log to the `console` with the format:
+// `${info.level}: ${info.message} JSON.stringify({ ...rest }) `
+if (process.env.NODE_ENV !== 'production') {
+  logger.add(new winston.transports.Console({
+    format: combine(
+      colorize(),
+      timestamp({
+        format: 'YYYY-MM-DD HH:mm:ss'
+      }),
+      consoleFormat
+    )
+  }));
+}
 
 export default logger;
