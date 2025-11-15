@@ -190,4 +190,38 @@ router.post('/:roomId/users', requireAuth, async (req, res) => {
   }
 });
 
+// Get all participants in a room
+// GET /api/rooms/:roomId/participants
+router.get('/:roomId/participants', requireAuth, async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const userId = req.user._id;
+
+    const room = await ChatRoom.findById(roomId)
+      .populate('participants', 'name email createdAt')
+      .lean()
+      .exec();
+
+    if (!room) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    // Check if user is a participant (optional - you can remove this if you want anyone to see)
+    const isParticipant = room.participants.some(p => String(p._id) === String(userId));
+    if (!isParticipant) {
+      return res.status(403).json({ error: 'You must be a member to view participants' });
+    }
+
+    console.log(`[Rooms] Fetched ${room.participants.length} participants for room ${roomId}`);
+    return res.json({ 
+      participants: room.participants,
+      roomName: room.name,
+      totalCount: room.participants.length
+    });
+  } catch (err) {
+    console.error('Get room participants error', err);
+    return res.status(500).json({ error: 'Failed to fetch participants' });
+  }
+});
+
 export default router;

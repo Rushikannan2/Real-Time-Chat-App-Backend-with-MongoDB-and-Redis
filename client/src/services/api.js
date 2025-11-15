@@ -135,6 +135,16 @@ export const roomsAPI = {
       throw error;
     }
   },
+
+  getRoomParticipants: async (roomId) => {
+    try {
+      const response = await apiClient.get(`/rooms/${roomId}/participants`);
+      return response.data;
+    } catch (error) {
+      console.error('[Rooms API] Get participants error:', error.response?.data || error.message);
+      throw error;
+    }
+  },
 };
 
 // Messages API
@@ -169,6 +179,7 @@ export const getAvailableRooms = roomsAPI.getAvailableRooms;
 export const createRoom = roomsAPI.createRoom;
 export const joinRoom = roomsAPI.joinRoom;
 export const addUserToRoom = roomsAPI.addUserToRoom;
+export const getRoomParticipants = roomsAPI.getRoomParticipants;
 export const getMessages = messagesAPI.getMessages;
 export const sendMessage = messagesAPI.sendMessage;
 
