@@ -98,6 +98,68 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
+// Get all available rooms (public rooms + rooms user is in)
+// GET /api/rooms/available
+router.get('/available', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    // Get all non-private rooms
+    const rooms = await ChatRoom.find({ isPrivate: false })
+      .select('name participants isPrivate createdAt')
+      .populate('participants', 'name email')
+      .sort({ createdAt: -1 })
+      .lean()
+      .exec();
+
+    // Mark which rooms the user is already in
+    const roomsWithStatus = rooms.map(room => ({
+      ...room,
+      isMember: room.participants.some(p => String(p._id) === String(userId))
+    }));
+
+    return res.json({ rooms: roomsWithStatus });
+  } catch (err) {
+    console.error('Fetch available rooms error', err);
+    return res.status(500).json({ error: 'Failed to fetch available rooms' });
+  }
+});
+
+// Join a room (add yourself as participant)
+// POST /api/rooms/:roomId/join
+router.post('/:roomId/join', requireAuth, async (req, res) => {
+  try {
+    const { roomId } = req.params;
+    const userId = req.user._id;
+
+    const room = await ChatRoom.findById(roomId).exec();
+    if (!room) return res.status(404).json({ error: 'Room not found' });
+
+    // Check if room is private
+    if (room.isPrivate) {
+      return res.status(403).json({ error: 'Cannot join private rooms. You must be invited.' });
+    }
+
+    // Check if already a participant
+    if (room.participants.map(String).includes(String(userId))) {
+      return res.status(400).json({ error: 'You are already a member of this room' });
+    }
+
+    // Add user to participants
+    const updated = await ChatRoom.findByIdAndUpdate(
+      roomId, 
+      { $addToSet: { participants: userId } }, 
+      { new: true }
+    ).populate('participants', 'name email').exec();
+
+    console.log(`[Rooms] User ${req.user.email} joined room ${room.name || roomId}`);
+    return res.json({ room: updated });
+  } catch (err) {
+    console.error('Join room error', err);
+    return res.status(500).json({ error: 'Failed to join room' });
+  }
+});
+
 // Add a user to a room
 // POST /api/rooms/:roomId/users
 // Body: { userId }

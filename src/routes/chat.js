@@ -10,29 +10,32 @@ const router = express.Router();
 // Send a message to a chat room
 // Protected route
 router.post('/:roomId', requireAuth, async (req, res) => {
-  const { message } = req.body;
+  const { content } = req.body;
   const { roomId } = req.params;
   const user = req.user; // set by requireAuth
 
-  if (!message) {
-    return res.status(400).json({ error: 'message is required' });
+  if (!content) {
+    console.log('[Chat Route] POST /:roomId - Missing content in request body');
+    return res.status(400).json({ error: 'content is required' });
   }
 
   try {
     const room = await ChatRoom.findById(roomId);
     if (!room) {
+      console.log(`[Chat Route] POST /:roomId - Room not found: ${roomId}`);
       return res.status(404).json({ error: 'Chat room not found' });
     }
 
     // Optional: Check if the user is a participant
     if (!room.participants.map(p => p.toString()).includes(user._id.toString())) {
+      console.log(`[Chat Route] POST /:roomId - User ${user._id} not a participant of room ${roomId}`);
       return res.status(403).json({ error: 'You are not a member of this chat room.' });
     }
 
     const newMessage = new Message({
       room: roomId,
       sender: user._id,
-      message: message,
+      content: content,
     });
 
     await newMessage.save();
@@ -40,7 +43,7 @@ router.post('/:roomId', requireAuth, async (req, res) => {
     // Populate sender info to include user details in the response
     const populatedMessage = await Message.findById(newMessage._id).populate('sender', 'name email');
 
-    logger.info(`Message from ${user.email} to room ${roomId}: ${message}`);
+    logger.info(`Message from ${user.email} to room ${roomId}: ${content}`);
     res.status(201).json(populatedMessage);
   } catch (error) {
     logger.error(`Error sending message to room ${roomId}:`, error);
@@ -63,15 +66,18 @@ router.get('/:roomId', requireAuth, async (req, res) => {
 
     // Optional: Check if the user is a participant
     if (!room.participants.map(p => p.toString()).includes(user._id.toString())) {
+      console.log(`[Chat Route] GET /:roomId - User ${user._id} not a participant of room ${roomId}`);
       return res.status(403).json({ error: 'You are not a member of this chat room.' });
     }
 
-    const messages = await Message.find({ chatRoom: roomId })
+    const messages = await Message.find({ room: roomId })
       .populate('sender', 'name email')
       .sort({ createdAt: 'asc' });
 
+    console.log(`[Chat Route] GET /:roomId - Retrieved ${messages.length} messages for room ${roomId}`);
     res.json(messages);
   } catch (error) {
+    console.error(`[Chat Route] GET /:roomId - Error fetching messages for room ${roomId}:`, error);
     logger.error(`Error fetching messages for room ${roomId}:`, error);
     res.status(500).json({ error: 'Server error while fetching messages' });
   }

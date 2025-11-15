@@ -1,6 +1,8 @@
-import dotenv from 'dotenv';
+// Environment variables are loaded by server.js before this file is imported
 import express from 'express';
 import http from 'http';
+import cors from 'cors';
+import jwt from 'jsonwebtoken';
 import { Server as SocketIOServer } from 'socket.io';
 import logger from './logger.js';
 import { connectMongoose } from './config/mongoose.js';
@@ -9,12 +11,17 @@ import { createAdapter } from '@socket.io/redis-adapter';
 import routes from './routes/index.js';
 import Message from './models/message.js';
 import ChatRoom from './models/chatRoom.js';
+import User from './models/user.js';
 import { enqueueSavedMessageForUser, drainQueueForUser } from './services/messageQueue.js';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  credentials: true
+}));
 
 // In-memory maps for quick socket -> user lookup. For horizontal scaling, use Redis (not implemented here).
 const userToSocket = new Map(); // userId -> socketId
@@ -47,7 +54,74 @@ async function start() {
   const server = http.createServer(app);
 
   const io = new SocketIOServer(server, {
-    cors: { origin: process.env.CORS_ORIGIN || '*', methods: ['GET', 'POST'] },
+    cors: { 
+      origin: process.env.CORS_ORIGIN || 'http://localhost:5173', 
+      methods: ['GET', 'POST'],
+      credentials: true
+    },
+  });
+
+  // Socket.IO authentication middleware
+  io.use(async (socket, next) => {
+    try {
+      const token = socket.handshake.auth.token || socket.handshake.query.token;
+      
+      if (!token) {
+        console.log('[Socket.IO Auth] Connection attempt without token');
+        return next(new Error('Authentication required'));
+      }
+
+      const JWT_SECRET = process.env.JWT_SECRET || 'change_this_secret';
+      console.log('[Socket.IO Auth] ========================================');
+      console.log('[Socket.IO Auth] JWT_SECRET length:', JWT_SECRET.length);
+      console.log('[Socket.IO Auth] JWT_SECRET first 30 chars:', JWT_SECRET.substring(0, 30));
+      console.log('[Socket.IO Auth] JWT_SECRET last 30 chars:', JWT_SECRET.substring(JWT_SECRET.length - 30));
+      console.log('[Socket.IO Auth] Token preview:', token.substring(0, 50) + '...');
+      console.log('[Socket.IO Auth] ========================================');
+      
+      let payload;
+      try {
+        payload = jwt.verify(token, JWT_SECRET);
+        console.log('[Socket.IO Auth] ✅ Token verified successfully!');
+        console.log('[Socket.IO Auth] Payload:', payload);
+      } catch (err) {
+        console.error('[Socket.IO Auth] ❌ Token verification FAILED');
+        console.error('[Socket.IO Auth] Error name:', err.name);
+        console.error('[Socket.IO Auth] Error message:', err.message);
+        
+        // Try to decode token without verification to see what's inside
+        try {
+          const parts = token.split('.');
+          const decodedPayload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+          console.log('[Socket.IO Auth] Token payload (unverified):', decodedPayload);
+        } catch (e) {
+          console.log('[Socket.IO Auth] Could not decode token');
+        }
+        
+        return next(new Error('Invalid or expired token'));
+      }
+
+      if (!payload || !payload.userId) {
+        console.log('[Socket.IO Auth] Token missing userId in payload:', payload);
+        return next(new Error('Invalid token payload'));
+      }
+
+      const user = await User.findById(payload.userId).select('-passwordHash').exec();
+      
+      if (!user) {
+        console.log('[Socket.IO Auth] User not found for ID:', payload.userId);
+        return next(new Error('User not found'));
+      }
+
+      // Attach user to socket for use in handlers
+      socket.userId = String(user._id);
+      socket.user = user;
+      console.log(`[Socket.IO Auth] ✓ Authenticated socket ${socket.id} for user ${user.email}`);
+      next();
+    } catch (err) {
+      console.error('[Socket.IO Auth] Unexpected authentication error:', err);
+      next(new Error('Authentication failed'));
+    }
   });
 
   // If Redis is available, attach the Socket.IO Redis adapter for horizontal scaling
@@ -94,32 +168,35 @@ async function start() {
 
   // Socket.IO event handlers
   io.on('connection', async (socket) => {
-    logger.info(`Socket connected: ${socket.id}`);
+    const userId = socket.userId; // Set by auth middleware
+    logger.info(`Socket connected: ${socket.id} for user ${userId}`);
+    console.log(`[Socket.IO] User ${socket.user?.email} connected with socket ${socket.id}`);
 
-    // Optional: client may pass userId in handshake query (or emit a 'setup' event)
-    const handshakeUserId = socket.handshake?.query?.userId;
-    if (handshakeUserId) {
-      userToSocket.set(String(handshakeUserId), socket.id);
-      socketToUser.set(socket.id, String(handshakeUserId));
+    // User is already authenticated via middleware
+    if (userId) {
+      userToSocket.set(userId, socket.id);
+      socketToUser.set(socket.id, userId);
       // add to Redis presence
-      await addSocketForUser(String(handshakeUserId), socket.id);
-      logger.info(`Associated socket ${socket.id} with user ${handshakeUserId}`);
+      await addSocketForUser(userId, socket.id);
+      
       // Drain any queued messages for this user and deliver now
       try {
-        const uid = String(handshakeUserId);
-        await drainQueueForUser(uid, async (msgObj) => {
+        await drainQueueForUser(userId, async (msgObj) => {
           // emit to this socket only
           socket.emit('receiveMessage', msgObj);
+          console.log(`[Socket.IO] Delivered queued message ${msgObj._id} to user ${userId}`);
           // update DB to mark delivered
           try {
             if (msgObj && msgObj._id) {
-              await Message.findByIdAndUpdate(msgObj._id, { $addToSet: { deliveredTo: uid } }).exec();
+              await Message.findByIdAndUpdate(msgObj._id, { $addToSet: { deliveredTo: userId } }).exec();
             }
           } catch (e) {
+            console.error('[Socket.IO] Failed to mark queued message delivered:', e);
             logger.warn('Failed to mark queued message delivered in DB: ' + (e.message || e));
           }
         });
       } catch (e) {
+        console.error('[Socket.IO] drainQueueForUser failed on connection:', e);
         logger.warn('drainQueueForUser failed on connection handshake: ' + (e.message || e));
       }
     }
@@ -139,24 +216,36 @@ async function start() {
     });
 
     // sendMessage: persist then broadcast
-    // payload: { room, sender, content, attachments?, metadata? }
+    // payload: { room, content, attachments?, metadata? }
     socket.on('sendMessage', async (payload) => {
       try {
-        if (!payload || !payload.room || !payload.sender) {
-          socket.emit('error', { message: 'Invalid sendMessage payload' });
+        if (!payload || !payload.room || !payload.content) {
+          console.log('[Socket.IO] sendMessage - Invalid payload:', payload);
+          socket.emit('error', { message: 'Invalid sendMessage payload: room and content required' });
+          return;
+        }
+
+        const senderId = socket.userId; // Use authenticated userId
+        if (!senderId) {
+          console.log('[Socket.IO] sendMessage - No authenticated user');
+          socket.emit('error', { message: 'Authentication required' });
           return;
         }
 
         const msg = new Message({
           room: payload.room,
-          sender: payload.sender,
-          content: payload.content || '',
+          sender: senderId,
+          content: payload.content,
           attachments: payload.attachments || [],
           metadata: payload.metadata || {},
         });
 
-  const saved = await msg.save();
+        const saved = await msg.save();
+        console.log(`[Socket.IO] Message saved: ${saved._id} from user ${senderId} to room ${payload.room}`);
 
+        // Populate sender info before broadcasting
+        const populatedMessage = await Message.findById(saved._id).populate('sender', 'name email').exec();
+        
         // Update chat room's lastMessageAt for ordering
         try {
           await ChatRoom.findByIdAndUpdate(payload.room, { lastMessageAt: saved.createdAt || new Date() }).exec();
@@ -174,16 +263,17 @@ async function start() {
           logger.warn('Failed to push message to Redis queue: ' + (e.message || e));
         }
 
-        // Broadcast to all sockets in the room (including sender)
+        // Broadcast populated message to all sockets in the room (including sender)
         // With the Redis adapter attached this will propagate across server instances.
-        io.to(String(payload.room)).emit('receiveMessage', saved);
+        io.to(String(payload.room)).emit('receiveMessage', populatedMessage);
 
         // Determine participants and enqueue message for offline users (and mark delivered for online ones)
         try {
           const roomDoc = await ChatRoom.findById(payload.room).select('participants').lean();
           if (roomDoc && Array.isArray(roomDoc.participants) && roomDoc.participants.length) {
             const participants = roomDoc.participants.map((p) => String(p));
-            const senderId = String(saved.sender || payload.sender);
+            const messageSenderId = String(saved.sender);
+            console.log(`[Socket.IO] Processing delivery for ${participants.length} participants in room ${payload.room}`);
             // For each participant except sender, check presence
             for (const participantId of participants) {
               if (participantId === senderId) continue;
@@ -205,25 +295,31 @@ async function start() {
 
               if (isOnline) {
                 // Mark delivered in DB so we track per-user delivery
+                console.log(`[Socket.IO] User ${participantId} is online, marking message as delivered`);
                 try {
                   await Message.findByIdAndUpdate(saved._id, { $addToSet: { deliveredTo: participantId } }).exec();
                 } catch (e) {
+                  console.error('[Socket.IO] Failed to mark message delivered:', e);
                   logger.warn('Failed to mark message delivered for ' + participantId + ': ' + (e.message || e));
                 }
               } else {
                 // enqueue for later delivery
+                console.log(`[Socket.IO] User ${participantId} is offline, enqueueing message`);
                 try {
                   await enqueueSavedMessageForUser(participantId, saved);
                 } catch (e) {
+                  console.error('[Socket.IO] Failed to enqueue message for offline user:', e);
                   logger.warn('Failed to enqueue message for offline user ' + participantId + ': ' + (e.message || e));
                 }
               }
             }
           }
         } catch (e) {
+          console.error('[Socket.IO] Error computing offline recipients:', e);
           logger.warn('Error while computing offline recipients: ' + (e.message || e));
         }
       } catch (e) {
+        console.error('[Socket.IO] sendMessage handler error:', e.stack || e);
         logger.error('sendMessage handler error: ' + (e.stack || e));
         socket.emit('error', { message: 'sendMessage failed' });
       }

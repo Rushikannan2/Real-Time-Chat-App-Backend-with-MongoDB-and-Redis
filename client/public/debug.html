@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Auth & Socket Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #00ff00; }
+    button { margin: 10px; padding: 10px 20px; background: #333; color: #0f0; border: 1px solid #0f0; cursor: pointer; }
+    button:hover { background: #0f0; color: #000; }
+    pre { background: #000; padding: 10px; border: 1px solid #0f0; overflow: auto; max-height: 400px; }
+    .error { color: #ff0000; }
+    .success { color: #00ff00; }
+    input { background: #333; color: #0f0; border: 1px solid #0f0; padding: 5px; margin: 5px; }
+  </style>
+</head>
+<body>
+  <h1>🔧 Real-Time Chat Debug Tool</h1>
+  
+  <div>
+    <h3>Step 1: Create New Account</h3>
+    <input type="text" id="name" placeholder="Name" value="Debug User">
+    <input type="email" id="email" placeholder="Email" value="debug@test.com">
+    <input type="password" id="password" placeholder="Password" value="debug123">
+    <button onclick="signup()">Sign Up</button>
+  </div>
+
+  <div>
+    <h3>Step 2: Test Socket Connection</h3>
+    <button onclick="testSocket()">Connect Socket</button>
+    <button onclick="disconnect()">Disconnect</button>
+  </div>
+
+  <div>
+    <h3>Step 3: Debug Tools</h3>
+    <button onclick="checkToken()">Check Token</button>
+    <button onclick="clearAll()">Clear All Data</button>
+  </div>
+
+  <h3>Console Output:</h3>
+  <pre id="output"></pre>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    let socket = null;
+    const API_URL = 'http://localhost:3000/api';
+    const WS_URL = 'http://localhost:3000';
+
+    function log(message, isError = false) {
+      const output = document.getElementById('output');
+      const timestamp = new Date().toLocaleTimeString();
+      const className = isError ? 'error' : 'success';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+      console.log(message);
+    }
+
+    async function signup() {
+      const name = document.getElementById('name').value;
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+
+      log('📝 Signing up...');
+      try {
+        const response = await fetch(`${API_URL}/auth/signup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, email, password })
+        });
+
+        const data = await response.json();
+        
+        if (response.ok) {
+          localStorage.setItem('authToken', data.token);
+          localStorage.setItem('user', JSON.stringify(data.user));
+          log(`✅ Signup successful! User: ${data.user.email}`);
+          log(`🔑 Token: ${data.token.substring(0, 50)}...`);
+          checkToken();
+        } else {
+          log(`❌ Signup failed: ${data.error}`, true);
+        }
+      } catch (err) {
+        log(`❌ Signup error: ${err.message}`, true);
+      }
+    }
+
+    function testSocket() {
+      const token = localStorage.getItem('authToken');
+      
+      if (!token) {
+        log('❌ No token found! Please sign up first.', true);
+        return;
+      }
+
+      log('🔌 Connecting to Socket.IO...');
+      log(`🔑 Using token: ${token.substring(0, 50)}...`);
+
+      socket = io(WS_URL, {
+        auth: { token },
+        transports: ['websocket', 'polling']
+      });
+
+      socket.on('connect', () => {
+        log(`✅ Socket connected! ID: ${socket.id}`);
+      });
+
+      socket.on('connect_error', (error) => {
+        log(`❌ Connection error: ${error.message}`, true);
+      });
+
+      socket.on('disconnect', (reason) => {
+        log(`🔌 Disconnected: ${reason}`);
+      });
+
+      socket.on('error', (data) => {
+        log(`❌ Server error: ${data.message}`, true);
+      });
+    }
+
+    function disconnect() {
+      if (socket) {
+        socket.disconnect();
+        socket = null;
+        log('🔌 Disconnected manually');
+      }
+    }
+
+    function checkToken() {
+      const token = localStorage.getItem('authToken');
+      
+      if (!token) {
+        log('❌ No token in localStorage', true);
+        return;
+      }
+
+      try {
+        const parts = token.split('.');
+        const payload = JSON.parse(atob(parts[1]));
+        
+        log('🔍 Token info:');
+        log(`   User ID: ${payload.userId}`);
+        log(`   Issued: ${new Date(payload.iat * 1000).toLocaleString()}`);
+        log(`   Expires: ${new Date(payload.exp * 1000).toLocaleString()}`);
+        log(`   Expired? ${Date.now() > payload.exp * 1000 ? 'YES ❌' : 'NO ✅'}`);
+      } catch (err) {
+        log(`❌ Invalid token format: ${err.message}`, true);
+      }
+    }
+
+    function clearAll() {
+      localStorage.clear();
+      if (socket) {
+        socket.disconnect();
+        socket = null;
+      }
+      log('🗑️  All data cleared!');
+    }
+
+    log('🚀 Debug tool loaded. Start by signing up with a NEW account.');
+  </script>
+</body>
+</html>

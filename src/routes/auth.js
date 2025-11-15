@@ -9,6 +9,12 @@ const router = express.Router();
 const JWT_SECRET = process.env.JWT_SECRET || 'change_this_secret';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 
+// Log JWT_SECRET on module load
+console.log('[Auth Routes] JWT_SECRET loaded at module import time:');
+console.log('[Auth Routes] Length:', JWT_SECRET.length);
+console.log('[Auth Routes] First 30 chars:', JWT_SECRET.substring(0, 30));
+console.log('[Auth Routes] Last 30 chars:', JWT_SECRET.substring(JWT_SECRET.length - 30));
+
 function validateEmail(email) {
   return typeof email === 'string' && email.length >= 5 && email.includes('@');
 }
@@ -37,7 +43,10 @@ router.post('/signup', async (req, res, next) => {
     await user.save();
 
     // Issue token
+    console.log('[Signup] Signing token with JWT_SECRET length:', JWT_SECRET.length);
+    console.log('[Signup] JWT_SECRET first 30:', JWT_SECRET.substring(0, 30));
     const token = jwt.sign({ userId: user._id }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    console.log('[Signup] Token created:', token.substring(0, 50) + '...');
 
     res.status(201).json({ token, user: { id: user._id, name: user.name, email: user.email } });
   } catch (err) {

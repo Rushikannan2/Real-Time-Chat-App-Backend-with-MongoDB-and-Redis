@@ -13,8 +13,7 @@ const MessageSchema = new Schema(
   {
     room: { type: Schema.Types.ObjectId, ref: 'ChatRoom', required: true, index: true },
     sender: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-    message: { type: String, required: true, trim: true },
-    content: { type: String },
+    content: { type: String, required: true, trim: true },
     attachments: [
       {
         url: String,
